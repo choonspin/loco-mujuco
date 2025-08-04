@@ -21,82 +21,9 @@ DEFAULT_TARGET_FREQUENCY = 40.0
 DEFAULT_HEIGHT_OFFSET = 1.0  # Increased from 0.975 to ensure feet touch ground
 CM_TO_M = 0.01
 
-def analyze_bvh_rest_pose(mocap):
-    """
-    Analyze the BVH rest pose (first frame) to determine if arm corrections are needed.
-    Returns adaptive corrections based on the actual BVH data.
-    """
-    corrections = {}
-    
-    try:
-        # Analyze first frame arm positions
-        frame_0 = 0
-        
-        # Check right arm angles in first frame
-        right_arm_angles = {}
-        left_arm_angles = {}
-        
-        arm_joints = ['Character1_RightArm', 'Character1_LeftArm']
-        for joint_name in arm_joints:
-            try:
-                x_rot = mocap.frame_joint_channel(frame_0, joint_name, 'Xrotation') or 0.0
-                y_rot = mocap.frame_joint_channel(frame_0, joint_name, 'Yrotation') or 0.0  
-                z_rot = mocap.frame_joint_channel(frame_0, joint_name, 'Zrotation') or 0.0
-                
-                if 'Right' in joint_name:
-                    right_arm_angles = {'x': x_rot, 'y': y_rot, 'z': z_rot}
-                else:
-                    left_arm_angles = {'x': x_rot, 'y': y_rot, 'z': z_rot}
-                    
-            except:
-                pass
-        
-        print(f"🔍 BVH Rest Pose Analysis:")
-        print(f"  Right arm (X,Y,Z): ({right_arm_angles.get('x', 0):.1f}°, {right_arm_angles.get('y', 0):.1f}°, {right_arm_angles.get('z', 0):.1f}°)")
-        print(f"  Left arm (X,Y,Z):  ({left_arm_angles.get('x', 0):.1f}°, {left_arm_angles.get('y', 0):.1f}°, {left_arm_angles.get('z', 0):.1f}°)")
-        
-        # Determine if arms are pointing backward (common issue)
-        # In BVH, arms pointing backward often have Y rotations around ±180°
-        right_y = right_arm_angles.get('y', 0)
-        left_y = left_arm_angles.get('y', 0)
-        
-        # Check if arms appear to be pointing backward (Y rotation near ±180°)
-        backward_threshold = 120  # degrees
-        
-        # Always apply a small forward correction for natural arm positioning
-        # Most BVH files have arms too far back for natural human posture
-        base_forward_correction = np.pi/8  # 22.5° forward for natural posture
-        
-        if abs(right_y) > backward_threshold or abs(left_y) > backward_threshold:
-            print(f"  ⚠️  Arms appear to be pointing backward - will apply enhanced corrections")
-            corrections['arm_flex_correction'] = base_forward_correction + np.pi/12  # Extra 15° for backward arms
-            corrections['arm_rot_correction'] = np.pi/12   # 15° rotation
-        else:
-            print(f"  ✅ Arms in reasonable position - applying basic forward correction")
-            corrections['arm_flex_correction'] = base_forward_correction  # Basic forward positioning
-            corrections['arm_rot_correction'] = 0.0
-            
-        # Check for extreme angles that might need limiting
-        max_angle = max(abs(right_arm_angles.get('x', 0)), abs(right_arm_angles.get('y', 0)), 
-                       abs(right_arm_angles.get('z', 0)), abs(left_arm_angles.get('x', 0)),
-                       abs(left_arm_angles.get('y', 0)), abs(left_arm_angles.get('z', 0)))
-        
-        if max_angle > 200:
-            print(f"  ⚠️  Extreme arm angles detected (max: {max_angle:.1f}°) - will apply angle normalization")
-            corrections['normalize_extreme_angles'] = True
-        else:
-            corrections['normalize_extreme_angles'] = False
-            
-    except Exception as e:
-        print(f"  ⚠️  Could not analyze rest pose: {e}")
-        # Conservative fallback - no corrections
-        corrections = {
-            'arm_flex_correction': 0.0,
-            'arm_rot_correction': 0.0, 
-            'normalize_extreme_angles': False
-        }
-    
-    return corrections
+def normalize_angle(angle_deg):
+    """Normalize angle to [-180, 180] range."""
+    return ((angle_deg + 180) % 360) - 180
 
 
 def convert_bvh_to_trajectory(bvh_file_path, target_frequency=DEFAULT_TARGET_FREQUENCY):
@@ -104,9 +31,6 @@ def convert_bvh_to_trajectory(bvh_file_path, target_frequency=DEFAULT_TARGET_FRE
     
     with open(bvh_file_path) as f:
         mocap = Bvh(f.read())
-    
-    # Analyze BVH rest pose to determine adaptive corrections
-    arm_corrections = analyze_bvh_rest_pose(mocap)
     
     # Initialize SkeletonTorque environment
     env_name = 'SkeletonTorque'
@@ -152,14 +76,14 @@ def convert_bvh_to_trajectory(bvh_file_path, target_frequency=DEFAULT_TARGET_FRE
             ('arm_rot_l', 'Yrotation', -0.5),       # Same Y but for rotation (shared, mirrored)
         ],
         
-        # SIMPLIFIED FOREARM MAPPING: Follow the same pattern as knee/ankle
+        # CORRECTED FOREARM MAPPING: Use channels with largest motion ranges
         'Character1_RightForeArm': [
-            ('elbow_flex_r', 'Xrotation', -1.0),    # Same pattern as knee_angle_r
-            ('pro_sup_r', 'Yrotation', 1.0),        # Simple Y-rotation for palm
+            ('elbow_flex_r', 'Xrotation', -1.0),    # 37.1° range → elbow flexion
+            ('pro_sup_r', 'Zrotation', 1.0),        # 371.0° range → palm rotation (corrected)
         ], 
         'Character1_LeftForeArm': [
-            ('elbow_flex_l', 'Xrotation', -1.0),    # Same pattern as knee_angle_l  
-            ('pro_sup_l', 'Yrotation', -1.0),       # Mirrored Y-rotation for palm
+            ('elbow_flex_l', 'Xrotation', -1.0),    # 38.8° range → elbow flexion  
+            ('pro_sup_l', 'Yrotation', -1.0),       # 56.4° range → palm rotation (already correct)
         ],
         'Character1_RightHand': [
             ('wrist_flex_r', 'Xrotation', 1.0),     # BVH hand X-rotation → wrist flexion
@@ -202,44 +126,42 @@ def convert_bvh_to_trajectory(bvh_file_path, target_frequency=DEFAULT_TARGET_FRE
     # Calculate adaptive height offset to ensure feet stay above ground
     if all_y_positions:
         min_relative_y = min(all_y_positions)
-        # Ensure minimum height is at least 0.85m (allowing for leg length)
         adaptive_offset = max(DEFAULT_HEIGHT_OFFSET, 0.85 - min_relative_y)
-        print(f"Using adaptive height offset: {adaptive_offset:.3f}m (min relative Y: {min_relative_y:.3f}m)")
     else:
         adaptive_offset = DEFAULT_HEIGHT_OFFSET
-        print(f"Using default height offset: {adaptive_offset:.3f}m")
     
     for frame_idx in range(n_frames):
-        # Root transformation
+        # Root position (separate from rotation to avoid exception overwriting)
         try:
             bvh_x = mocap.frame_joint_channel(frame_idx, root_joint, 'Xposition') * CM_TO_M
             bvh_y = mocap.frame_joint_channel(frame_idx, root_joint, 'Yposition') * CM_TO_M
             bvh_z = mocap.frame_joint_channel(frame_idx, root_joint, 'Zposition') * CM_TO_M
             
-            # Convert BVH coordinate system to MuJoCo coordinate system
-            # BVH: X=left/right, Y=up/down, Z=forward/back
-            # MuJoCo: X=forward/back, Y=left/right, Z=up/down
+            # Convert BVH to MuJoCo coordinates: remove forward translation to prevent backward walking
             root_pos = np.array([
-                bvh_z - init_z,                      # BVH Z → MuJoCo X (forward/back)
-                bvh_x - init_x,                      # BVH X → MuJoCo Y (left/right)
-                bvh_y - init_y + adaptive_offset  # BVH Y → MuJoCo Z (up/down) + adaptive height fix
+                0.0,                              # Remove forward translation
+                bvh_x - init_x,                   # Keep lateral movement
+                bvh_y - init_y + adaptive_offset  # Keep height + adaptive offset
             ])
             
+        except:
+            root_pos = np.array([0.0, 0.0, adaptive_offset])
+        
+        # Root rotation (separate exception handling)
+        try:
             rx = np.deg2rad(mocap.frame_joint_channel(frame_idx, root_joint, 'Xrotation'))
             ry = np.deg2rad(mocap.frame_joint_channel(frame_idx, root_joint, 'Yrotation'))
             rz = np.deg2rad(mocap.frame_joint_channel(frame_idx, root_joint, 'Zrotation'))
             
-            # Convert BVH euler angles to rotation
-            root_rot = sRot.from_euler('zyx', [rz, ry, rx])
-            # Use original alignment but fix order to prevent flipping
-            xml_align = sRot.from_euler('xyz', [np.pi/2, 0, 0])
-            combined_rot = root_rot * xml_align  # BVH rotation first, then alignment
+            # Convert BVH euler angles to rotation with coordinate alignment
+            root_rot = sRot.from_euler('xyz', [rx, ry, rz])
+            xml_align = sRot.from_euler('x', [np.pi/2])  # 90° pitch for Z-up alignment
+            combined_rot = xml_align * root_rot
             
             root_quat_xyzw = combined_rot.as_quat()
             root_quat_wxyz = np.array([root_quat_xyzw[3], root_quat_xyzw[0], 
                                       root_quat_xyzw[1], root_quat_xyzw[2]])
-        except:
-            root_pos = np.array([0.0, 0.0, adaptive_offset])
+        except Exception as e:
             root_quat_wxyz = np.array([np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0])
         
         qpos_data[frame_idx, :3] = root_pos
@@ -253,20 +175,11 @@ def convert_bvh_to_trajectory(bvh_file_path, target_frequency=DEFAULT_TARGET_FRE
                         angle_deg = mocap.frame_joint_channel(frame_idx, bvh_joint, bvh_component) or 0.0
                         angle_rad = np.deg2rad(angle_deg)
                         
-                        # IMPROVED: Handle extreme angle normalization properly
-                        # First normalize degrees to [-180, 180] before converting to radians
-                        # This fixes the 368° → 8° issue
-                        angle_deg_normalized = ((angle_deg + 180) % 360) - 180
+                        # Normalize extreme angles to [-180, 180] range before conversion
+                        angle_deg_normalized = normalize_angle(angle_deg)
                         angle_rad = np.deg2rad(angle_deg_normalized)
                         
-                        # Debug: Log extreme angle corrections (only first few to avoid spam)
-                        if abs(angle_deg) > 300 and frame_idx < 3:
-                            print(f"  Frame {frame_idx}: Extreme angle correction: {angle_deg:.1f}° → {angle_deg_normalized:.1f}° for {mujoco_joint}")
-                        
-                        # Apply scaling
                         corrected_angle = angle_rad * scaling
-                        
-                        # NO HARDCODED CORRECTIONS - Use exact BVH data only
                         
                         # Apply joint limits
                         if 'arm' in mujoco_joint:
@@ -277,13 +190,8 @@ def convert_bvh_to_trajectory(bvh_file_path, target_frequency=DEFAULT_TARGET_FRE
                         qpos_addr = env._model.jnt_qposadr[joint_idx]
                         qpos_data[frame_idx, qpos_addr] = corrected_angle
                         
-                        # DEBUG: Log first few successful mappings
-                        if frame_idx < 3 and abs(corrected_angle) > 0.01:
-                            print(f"    ✓ {mujoco_joint}: BVH {angle_deg:.1f}° → NPZ {np.rad2deg(corrected_angle):.1f}° (qpos[{qpos_addr}])")
                         
                     except Exception as e:
-                        if frame_idx < 3:  # Only log errors for first few frames
-                            print(f"    ❌ Failed to set {mujoco_joint}: {e}")
                         pass
     
     # Calculate velocities using finite differences

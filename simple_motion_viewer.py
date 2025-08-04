@@ -43,34 +43,58 @@ def play_motion(traj_file, env_name='SkeletonTorque'):
     print("Press Ctrl+C to stop")
     
     try:
-        # Play the trajectory
-        for step in range(traj.data.qpos.shape[0]):
-            # Get current state from trajectory
-            qpos = traj.data.qpos[step]
-            if traj.data.qvel is not None:
-                qvel = traj.data.qvel[step]
-            else:
-                qvel = np.zeros(traj.data.qpos.shape[1] - 1)
+        # Loop the trajectory playback
+        loop_count = 0
+        while True:
+            loop_count += 1
+            print(f"\n🔄 Starting playback loop #{loop_count}")
             
-            # Set the state directly
-            env._data.qpos[:] = qpos
-            env._data.qvel[:] = qvel
+            # Reset to initial state before each loop
+            print("🔁 Resetting simulation...")
+            obs = env.reset()
             
-            # Forward dynamics
+            # Ensure we start from the trajectory's first frame
+            initial_qpos = traj.data.qpos[0]
+            initial_qvel = traj.data.qvel[0] if traj.data.qvel is not None else np.zeros(env._model.nv)
+            
+            env._data.qpos[:] = initial_qpos
+            env._data.qvel[:] = initial_qvel
+            
             import mujoco
             mujoco.mj_forward(env._model, env._data)
             
-            # Render
-            if hasattr(env, 'render'):
-                env.render()
+            print(f"✅ Reset complete. Starting motion from frame 0...")
             
-            # Print progress
-            if step % 50 == 0:
-                root_height = env._data.qpos[2]  # Z position
-                print(f"  Step {step:3d}/{traj.data.qpos.shape[0]}: Root height = {root_height:7.3f}m")
+            # Play the trajectory
+            for step in range(traj.data.qpos.shape[0]):
+                # Get current state from trajectory
+                qpos = traj.data.qpos[step]
+                if traj.data.qvel is not None:
+                    qvel = traj.data.qvel[step]
+                else:
+                    qvel = np.zeros(env._model.nv)
+                
+                # Set the state directly
+                env._data.qpos[:] = qpos
+                env._data.qvel[:] = qvel
+                
+                # Forward dynamics
+                mujoco.mj_forward(env._model, env._data)
+                
+                # Render
+                if hasattr(env, 'render'):
+                    env.render()
+                
+                # Print progress
+                if step % 50 == 0:
+                    root_pos = env._data.qpos[:3]  # X, Y, Z position
+                    print(f"  Step {step:3d}/{traj.data.qpos.shape[0]}: Root pos = ({root_pos[0]:6.3f}, {root_pos[1]:6.3f}, {root_pos[2]:6.3f})m")
+                
+                # Control playback speed
+                time.sleep(1.0 / traj.info.frequency * 0.5)  # Half speed for better viewing
             
-            # Control playback speed
-            time.sleep(1.0 / traj.info.frequency * 0.5)  # Half speed for better viewing
+            print(f"🏁 Loop #{loop_count} completed. Resetting for next loop...")
+            time.sleep(1.0)  # Pause between loops
             
     except KeyboardInterrupt:
         print("\n⏹️ Playback stopped by user")
